@@ -1,12 +1,34 @@
+import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, MailPlus, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { sidebarBadgesApi } from "@/api/sidebarBadges";
+import { ApiError } from "@/api/client";
 import { Link } from "@/lib/router";
+import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 export function CompanySettingsSidebar() {
-  const { selectedCompany } = useCompany();
+  const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { data: badges } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.sidebarBadges(selectedCompanyId)
+      : ["sidebar-badges", "__disabled__"] as const,
+    queryFn: async () => {
+      try {
+        return await sidebarBadgesApi.get(selectedCompanyId!);
+      } catch (error) {
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+          return null;
+        }
+        throw error;
+      }
+    },
+    enabled: !!selectedCompanyId,
+    retry: false,
+    refetchInterval: 15_000,
+  });
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -32,7 +54,13 @@ export function CompanySettingsSidebar() {
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
-          <SidebarNavItem to="/company/settings/access" label="Access" icon={Shield} end />
+          <SidebarNavItem
+            to="/company/settings/access"
+            label="Access"
+            icon={Shield}
+            badge={badges?.joinRequests ?? 0}
+            end
+          />
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
         </div>
       </nav>
