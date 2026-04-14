@@ -19,6 +19,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
+import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import {
   hasLegacyIssueDetailQuery,
   createIssueDetailPath,
@@ -140,10 +141,6 @@ function readIssueRunStateFromCache(queryClient: QueryClient, issueId: string) {
     activeRun,
     runningIssueRun: resolveRunningIssueRun(activeRun, liveRuns),
   };
-}
-
-function keepPreviousData<T>(previousData: T | undefined) {
-  return previousData;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -552,13 +549,13 @@ function IssueDetailChatTab({
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
   const { data: liveRuns, isLoading: liveRunsLoading } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     refetchInterval: 3000,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const { data: activeRun, isLoading: activeRunLoading } = useQuery({
@@ -566,14 +563,14 @@ function IssueDetailChatTab({
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!issue.executionRunId || issue.status === "in_progress",
     refetchInterval: liveRunCount > 0 ? false : 3000,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
   const hasLiveRuns = liveRunCount > 0 || !!activeRun;
   const { data: linkedRuns, isLoading: linkedRunsLoading } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
     refetchInterval: hasLiveRuns ? 5000 : false,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
 
   const runningIssueRun = useMemo(
@@ -725,17 +722,17 @@ function IssueDetailActivityTab({
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
   const { data: linkedRuns, isLoading: linkedRunsLoading } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const { data: linkedApprovals } = useQuery({
     queryKey: queryKeys.issues.approvals(issueId),
     queryFn: () => issuesApi.listApprovals(issueId),
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.listApprovals>>>(issueId),
   });
   const initialLoading =
     (activityLoading && activity === undefined)
@@ -928,7 +925,7 @@ export function IssueDetail() {
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
       getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<InfiniteData<IssueComment[], string | null>>(issueId ?? "pending"),
   });
   const comments = useMemo(
     () => flattenIssueCommentPages(commentPages?.pages),
@@ -939,7 +936,7 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
     enabled: !!issueId,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(issueId ?? "pending"),
   });
 
   const { data: liveRunCount = 0 } = useQuery({
@@ -948,7 +945,7 @@ export function IssueDetail() {
     enabled: !!issueId,
     refetchInterval: 3000,
     select: (runs) => runs.length,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<number>(issueId ?? "pending"),
   });
 
   const { data: hasActiveRun = false } = useQuery({
@@ -957,7 +954,7 @@ export function IssueDetail() {
     enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
     refetchInterval: liveRunCount > 0 ? false : 3000,
     select: (run) => !!run,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<boolean>(issueId ?? "pending"),
   });
   const hasLiveRuns = liveRunCount > 0 || hasActiveRun;
   const sourceBreadcrumb = useMemo(
@@ -972,7 +969,7 @@ export function IssueDetail() {
         : ["issues", "parent", "pending"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.id }),
     enabled: !!resolvedCompanyId && !!issue?.id,
-    placeholderData: keepPreviousData,
+    placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
 
   const { data: agents } = useQuery({
