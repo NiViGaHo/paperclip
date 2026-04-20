@@ -3,12 +3,17 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { redactJwtTokens } from "../log-redaction.js";
+import { logger } from "../middleware/logger.js";
 
 export type RunLogStoreType = "local_file";
 
 export interface RunLogHandle {
   store: RunLogStoreType;
   logRef: string;
+  companyId?: string;
+  agentId?: string;
+  runId?: string;
 }
 
 export interface RunLogReadOptions {
@@ -50,7 +55,7 @@ function resolveWithin(basePath: string, relativePath: string) {
   return resolved;
 }
 
-function createLocalFileRunLogStore(basePath: string): RunLogStore {
+export function createLocalFileRunLogStore(basePath: string): RunLogStore {
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
@@ -103,16 +108,27 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const absPath = resolveWithin(basePath, relPath);
       await fs.writeFile(absPath, "", "utf8");
 
-      return { store: "local_file", logRef: relPath };
+      return { store: "local_file", logRef: relPath, companyId: input.companyId, agentId: input.agentId, runId: input.runId };
     },
 
     async append(handle, event) {
       if (handle.store !== "local_file") return;
       const absPath = resolveWithin(basePath, handle.logRef);
+      const redacted = redactJwtTokens(event.chunk);
+      if (redacted !== event.chunk) {
+        logger.info({
+          event: "run_log_jwt_redacted",
+          companyId: handle.companyId,
+          agentId: handle.agentId,
+          runId: handle.runId,
+          stream: event.stream,
+          deltaBytes: event.chunk.length - redacted.length,
+        });
+      }
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
-        chunk: event.chunk,
+        chunk: redacted,
       });
       await fs.appendFile(absPath, `${line}\n`, "utf8");
     },

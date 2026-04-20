@@ -3,7 +3,7 @@ import os from "node:os";
 export const CURRENT_USER_REDACTION_TOKEN = "*";
 export const REDACTED_JWT_TOKEN = "***JWT_REDACTED***";
 
-const JWT_TEXT_RE =
+export const JWT_TEXT_RE =
   /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]{20,})?/g;
 
 export interface CurrentUserRedactionOptions {
