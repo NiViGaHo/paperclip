@@ -811,6 +811,38 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           }
         }
 
+        // Pre-flight: skip issue creation if the assignee agent is currently paused.
+        // Covers all pauseReason values: budget_exhausted_auto (AKS-1338.A), manual,
+        // disciplinary, maintenance, etc. Emits routine_emit_skipped for MHDS (AKS-1338.C).
+        // lastEnqueuedAt is intentionally NOT updated so the next legitimate tick fires cleanly.
+        const assigneeRecord = await txDb
+          .select({ status: agents.status, pauseReason: agents.pauseReason, pausedAt: agents.pausedAt })
+          .from(agents)
+          .where(eq(agents.id, assigneeAgentId))
+          .then((rows) => rows[0] ?? null);
+
+        if (assigneeRecord?.status === "paused") {
+          logger.info({
+            routineId: input.routine.id,
+            assigneeAgentId,
+            pauseReason: assigneeRecord.pauseReason,
+            pausedAt: assigneeRecord.pausedAt,
+            wouldHaveFiredAt: triggeredAt,
+          }, "routine_emit_skipped");
+          const updated = await finalizeRun(createdRun.id, {
+            status: "assignee_paused",
+            completedAt: triggeredAt,
+          }, txDb);
+          await updateRoutineTouchedState({
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            triggeredAt,
+            status: "assignee_paused",
+            nextRunAt,
+          }, txDb);
+          return updated ?? createdRun;
+        }
+
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,

@@ -779,4 +779,82 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  describe("pre-flight assignee-status check (AKS-1350)", () => {
+    it("creates issue when assignee status is idle", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("issue_created");
+      expect(run.linkedIssueId).toBeTruthy();
+    });
+
+    it("creates issue when assignee status is running", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("issue_created");
+      expect(run.linkedIssueId).toBeTruthy();
+    });
+
+    it("skips issue creation and emits log when assignee is paused with pauseReason=manual", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents)
+        .set({ status: "paused", pauseReason: "manual", pausedAt: new Date() })
+        .where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("assignee_paused");
+      expect(run.linkedIssueId).toBeNull();
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(0);
+    });
+
+    it("skips issue creation and emits log when assignee is paused with pauseReason=budget_exhausted_auto", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents)
+        .set({ status: "paused", pauseReason: "budget_exhausted_auto", pausedAt: new Date() })
+        .where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("assignee_paused");
+      expect(run.linkedIssueId).toBeNull();
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(0);
+    });
+
+    it("produces zero new issues across consecutive ticks while assignee is paused", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents)
+        .set({ status: "paused", pauseReason: "budget_exhausted_auto", pausedAt: new Date() })
+        .where(eq(agents.id, agentId));
+      await svc.runRoutine(routine.id, { source: "manual" });
+      await svc.runRoutine(routine.id, { source: "manual" });
+      await svc.runRoutine(routine.id, { source: "manual" });
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(0);
+    });
+
+    it("resumes issue creation on the first tick after assignee is unpaused", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      await db.update(agents)
+        .set({ status: "paused", pauseReason: "budget_exhausted_auto", pausedAt: new Date() })
+        .where(eq(agents.id, agentId));
+      const skippedRun = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(skippedRun.status).toBe("assignee_paused");
+      await db.update(agents)
+        .set({ status: "idle", pauseReason: null, pausedAt: null })
+        .where(eq(agents.id, agentId));
+      const resumedRun = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(resumedRun.status).toBe("issue_created");
+      expect(resumedRun.linkedIssueId).toBeTruthy();
+    });
+  });
 });
