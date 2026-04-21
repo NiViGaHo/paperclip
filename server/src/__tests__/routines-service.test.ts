@@ -944,11 +944,13 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     it("skips issue creation when assignee agent no longer exists in DB (null-record guard)", async () => {
       const { agentId, routine, svc } = await seedFixture();
       // routines.assigneeAgentId has a RESTRICT FK to agents, blocking normal deletion.
-      // Disable FK triggers on routines to simulate an orphaned assigneeAgentId (defense-in-depth
-      // guard for any future code path that bypasses application-level constraints).
-      await db.execute(sql`ALTER TABLE routines DISABLE TRIGGER ALL`);
-      await db.delete(agents).where(eq(agents.id, agentId));
-      await db.execute(sql`ALTER TABLE routines ENABLE TRIGGER ALL`);
+      // Wrap in a transaction so ALTER TABLE DISABLE TRIGGER and DELETE share one connection
+      // (pool connections are not sticky across separate execute/delete calls).
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`ALTER TABLE routines DISABLE TRIGGER ALL`);
+        await tx.delete(agents).where(eq(agents.id, agentId));
+        await tx.execute(sql`ALTER TABLE routines ENABLE TRIGGER ALL`);
+      });
       const run = await svc.runRoutine(routine.id, { source: "manual" });
       expect(run.status).toBe("assignee_not_found");
       expect(run.linkedIssueId).toBeNull();
