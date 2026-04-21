@@ -429,6 +429,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         linkedIssueId: routineRuns.linkedIssueId,
         coalescedIntoRunId: routineRuns.coalescedIntoRunId,
         failureReason: routineRuns.failureReason,
+        skipReason: routineRuns.skipReason,
         completedAt: routineRuns.completedAt,
         createdAt: routineRuns.createdAt,
         updatedAt: routineRuns.updatedAt,
@@ -461,6 +462,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
+        skipReason: row.skipReason,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -697,6 +699,70 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     if (!secret || secret.companyId !== companyId) throw notFound("Routine trigger secret not found");
     const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest");
     return value;
+  }
+
+  const PRECONDITION_TIMEOUT_MS = 5_000;
+
+  async function evalPreconditionQuery(
+    query: string,
+    routine: typeof routines.$inferSelect,
+  ): Promise<boolean> {
+    try {
+      const queryText = query
+        .replaceAll(":companyId", routine.companyId)
+        .replaceAll(":agentId", routine.assigneeAgentId ?? "")
+        .replaceAll(":routineId", routine.id);
+
+      const result = await Promise.race([
+        db.transaction(async (tx) => {
+          await tx.execute(sql`SET TRANSACTION READ ONLY`);
+          await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+          return tx.execute(sql.raw(queryText));
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("precondition_query timeout")), PRECONDITION_TIMEOUT_MS),
+        ),
+      ]);
+
+      const rows = (result as { rows?: Record<string, unknown>[] }).rows;
+      if (!rows || rows.length === 0) return false;
+      const firstVal = Object.values(rows[0])[0];
+      return !!firstVal;
+    } catch (err) {
+      logger.warn({ err, routineId: routine.id }, "precondition_query error - fail-open");
+      return true;
+    }
+  }
+
+  async function evalPreconditionEndpoint(endpoint: string, routineId: string): Promise<boolean> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PRECONDITION_TIMEOUT_MS);
+    try {
+      const resp = await fetch(endpoint, { signal: controller.signal });
+      if (!resp.ok) return true; // fail-open on non-2xx
+      const body = await resp.json() as { shouldRun?: boolean };
+      return body.shouldRun !== false;
+    } catch (err) {
+      logger.warn({ err, routineId }, "precondition_endpoint error - fail-open");
+      return true;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async function evaluatePrecondition(
+    trigger: typeof routineTriggers.$inferSelect,
+    routine: typeof routines.$inferSelect,
+  ): Promise<boolean> {
+    if (trigger.preconditionQuery) {
+      const met = await evalPreconditionQuery(trigger.preconditionQuery, routine);
+      if (!met) return false;
+    }
+    if (trigger.preconditionEndpoint) {
+      const met = await evalPreconditionEndpoint(trigger.preconditionEndpoint, routine.id);
+      if (!met) return false;
+    }
+    return true;
   }
 
   async function dispatchRoutineRun(input: {
@@ -1299,6 +1365,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           nextRunAt,
           signingMode: patch.signingMode === undefined ? existing.signingMode : patch.signingMode,
           replayWindowSec: patch.replayWindowSec === undefined ? existing.replayWindowSec : patch.replayWindowSec,
+          preconditionQuery: patch.preconditionQuery === undefined ? existing.preconditionQuery : patch.preconditionQuery,
+          preconditionEndpoint: patch.preconditionEndpoint === undefined ? existing.preconditionEndpoint : patch.preconditionEndpoint,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
           updatedAt: new Date(),
@@ -1478,6 +1546,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           linkedIssueId: routineRuns.linkedIssueId,
           coalescedIntoRunId: routineRuns.coalescedIntoRunId,
           failureReason: routineRuns.failureReason,
+          skipReason: routineRuns.skipReason,
           completedAt: routineRuns.completedAt,
           createdAt: routineRuns.createdAt,
           updatedAt: routineRuns.updatedAt,
@@ -1509,6 +1578,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
+        skipReason: row.skipReason,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -1584,6 +1654,31 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           .returning({ id: routineTriggers.id })
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
+
+        if (row.trigger.preconditionQuery || row.trigger.preconditionEndpoint) {
+          const preconditionStart = Date.now();
+          const met = await evaluatePrecondition(row.trigger, row.routine);
+          const preconditionDurationMs = Date.now() - preconditionStart;
+          if (!met) {
+            logger.info({
+              routineId: row.routine.id,
+              triggerId: row.trigger.id,
+              preconditionDurationMs,
+            }, "routine_precondition_not_met");
+            const skippedAt = new Date();
+            await db.insert(routineRuns).values({
+              companyId: row.routine.companyId,
+              routineId: row.routine.id,
+              triggerId: row.trigger.id,
+              source: "schedule",
+              status: "skipped",
+              skipReason: "precondition_not_met",
+              triggeredAt: skippedAt,
+              completedAt: skippedAt,
+            });
+            continue;
+          }
+        }
 
         for (let i = 0; i < runCount; i += 1) {
           await dispatchRoutineRun({

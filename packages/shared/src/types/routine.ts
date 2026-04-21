@@ -77,6 +77,8 @@ export interface RoutineTrigger {
   replayWindowSec: number | null;
   lastRotatedAt: Date | null;
   lastResult: string | null;
+  preconditionQuery: string | null;
+  preconditionEndpoint: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;
@@ -98,6 +100,7 @@ export interface RoutineRun {
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
   failureReason: string | null;
+  skipReason: string | null;
   completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
