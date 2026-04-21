@@ -609,41 +609,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
   }
 
   async function findLiveExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
-    const executionBoundIssue = await executor
-      .select()
-      .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.id, issues.executionRunId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-        ),
-      )
-      .where(
-        and(
-          eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, "routine_execution"),
-          eq(issues.originId, routine.id),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
-        ),
-      )
-      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
-      .limit(1)
-      .then((rows) => rows[0]?.issues ?? null);
-    if (executionBoundIssue) return executionBoundIssue;
-
     return executor
       .select()
       .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.companyId, issues.companyId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
-        ),
-      )
       .where(
         and(
           eq(issues.companyId, routine.companyId),
@@ -655,7 +623,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       )
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
-      .then((rows) => rows[0]?.issues ?? null);
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
