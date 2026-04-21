@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -943,9 +943,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     it("skips issue creation when assignee agent no longer exists in DB (null-record guard)", async () => {
       const { agentId, routine, svc } = await seedFixture();
-      // Force-delete the agent row to simulate deletion between dispatch start and issue creation.
-      // The routine FK to agents has no onDelete so this requires bypassing normal deletion guards.
+      // routines.assigneeAgentId has a RESTRICT FK to agents, blocking normal deletion.
+      // Disable FK triggers on routines to simulate an orphaned assigneeAgentId (defense-in-depth
+      // guard for any future code path that bypasses application-level constraints).
+      await db.execute(sql`ALTER TABLE routines DISABLE TRIGGER ALL`);
       await db.delete(agents).where(eq(agents.id, agentId));
+      await db.execute(sql`ALTER TABLE routines ENABLE TRIGGER ALL`);
       const run = await svc.runRoutine(routine.id, { source: "manual" });
       expect(run.status).toBe("assignee_not_found");
       expect(run.linkedIssueId).toBeNull();
