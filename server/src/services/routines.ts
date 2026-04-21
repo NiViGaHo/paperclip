@@ -812,9 +812,11 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         }
 
 
-        // Pre-flight: skip issue creation if the assignee agent is currently paused.
+        // Pre-flight: skip issue creation if the assignee agent is paused or no longer exists.
         // Covers all pauseReason values: budget_exhausted_auto (AKS-1338.A), manual,
         // disciplinary, maintenance, etc. Emits routine_emit_skipped for MHDS (AKS-1338.C).
+        // Null-record guard (AKS-1350): defense-in-depth against agent deletion mid-dispatch or
+        // any future code path that bypasses the pre-transaction assigneeAgentId null check.
         // lastEnqueuedAt is intentionally NOT updated so the next legitimate tick fires cleanly.
         const assigneeRecord = await txDb
           .select({ status: agents.status, pauseReason: agents.pauseReason, pausedAt: agents.pausedAt })
@@ -822,23 +824,25 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           .where(eq(agents.id, assigneeAgentId))
           .then((rows) => rows[0] ?? null);
 
-        if (assigneeRecord?.status === "paused") {
+        if (!assigneeRecord || assigneeRecord.status === "paused") {
           logger.info({
             routineId: input.routine.id,
             assigneeAgentId,
-            pauseReason: assigneeRecord.pauseReason,
-            pausedAt: assigneeRecord.pausedAt,
+            pauseReason: assigneeRecord?.pauseReason ?? null,
+            pausedAt: assigneeRecord?.pausedAt ?? null,
+            assigneeFound: !!assigneeRecord,
             wouldHaveFiredAt: triggeredAt,
           }, "routine_emit_skipped");
+          const runStatus = assigneeRecord ? "assignee_paused" : "assignee_not_found";
           const updated = await finalizeRun(createdRun.id, {
-            status: "assignee_paused",
+            status: runStatus,
             completedAt: triggeredAt,
           }, txDb);
           await updateRoutineTouchedState({
             routineId: input.routine.id,
             triggerId: input.trigger?.id ?? null,
             triggeredAt,
-            status: "assignee_paused",
+            status: runStatus,
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;

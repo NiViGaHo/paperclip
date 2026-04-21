@@ -940,5 +940,20 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(resumedRun.status).toBe("issue_created");
       expect(resumedRun.linkedIssueId).toBeTruthy();
     });
+
+    it("skips issue creation when assignee agent no longer exists in DB (null-record guard)", async () => {
+      const { agentId, routine, svc } = await seedFixture();
+      // Force-delete the agent row to simulate deletion between dispatch start and issue creation.
+      // The routine FK to agents has no onDelete so this requires bypassing normal deletion guards.
+      await db.delete(agents).where(eq(agents.id, agentId));
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("assignee_not_found");
+      expect(run.linkedIssueId).toBeNull();
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(0);
+    });
   });
 });
