@@ -155,6 +155,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         keyId: undefined,
         runId: runIdHeader || claims.run_id || undefined,
         source: "agent_jwt",
+        scope: claims.scope ?? ["*"],
       };
       next();
       return;
@@ -183,6 +184,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       keyId: key.id,
       runId: runIdHeader || undefined,
       source: "agent_key",
+      scope: ["*"],
     };
 
     next();
