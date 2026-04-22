@@ -7,7 +7,7 @@
 import type { RequestHandler } from "express";
 import { logger } from "./logger.js";
 
-const ENFORCEMENT_ENABLED = process.env.PAPERCLIP_SCOPE_ENFORCEMENT === "true";
+const isEnforcementEnabled = () => process.env.PAPERCLIP_SCOPE_ENFORCEMENT === "true";
 
 interface RouteRequirement {
   method: string;
@@ -59,7 +59,7 @@ export function scopeGuard(): RequestHandler {
         "scope_guard: insufficient scope",
       );
 
-      if (ENFORCEMENT_ENABLED) {
+      if (isEnforcementEnabled()) {
         const err = Object.assign(new Error(`Insufficient scope: ${match.requiredScope} required`), {
           status: 403,
           expose: true,
