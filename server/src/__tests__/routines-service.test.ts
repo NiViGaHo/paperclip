@@ -971,7 +971,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       const { routine, svc } = await seedFixture();
       const { trigger } = await svc.createTrigger(
         routine.id,
-        { kind: "schedule", label: "every 15 min", cronExpression: "*/15 * * * *", timezone: "UTC" },
+        { kind: "schedule", enabled: true, label: "every 15 min", cronExpression: "*/15 * * * *", timezone: "UTC" },
         {},
       );
       await db
