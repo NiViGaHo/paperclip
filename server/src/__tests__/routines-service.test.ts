@@ -1,4 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
+import * as http from "node:http";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -959,6 +960,108 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         .from(issues)
         .where(eq(issues.originId, routine.id));
       expect(routineIssues).toHaveLength(0);
+    });
+  });
+
+  describe("precondition checks (AKS-1425)", () => {
+    async function seedTriggerWithPrecondition(opts: {
+      preconditionQuery?: string;
+      preconditionEndpoint?: string;
+    }) {
+      const { routine, svc } = await seedFixture();
+      const { trigger } = await svc.createTrigger(
+        routine.id,
+        { kind: "schedule", label: "every 15 min", cronExpression: "*/15 * * * *", timezone: "UTC" },
+        {},
+      );
+      await db
+        .update(routineTriggers)
+        .set({
+          preconditionQuery: opts.preconditionQuery ?? null,
+          preconditionEndpoint: opts.preconditionEndpoint ?? null,
+          nextRunAt: new Date("2000-01-01T00:00:00Z"),
+        })
+        .where(eq(routineTriggers.id, trigger.id));
+      return { routine, svc, triggerId: trigger.id };
+    }
+
+    it("skips scheduled run when preconditionQuery returns false", async () => {
+      const { routine, svc } = await seedTriggerWithPrecondition({
+        preconditionQuery: "SELECT false AS has_work",
+      });
+      await svc.tickScheduledTriggers(new Date());
+      const runs = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0].status).toBe("skipped");
+      expect(runs[0].skipReason).toBe("precondition_not_met");
+    });
+
+    it("fires scheduled run when preconditionQuery returns true", async () => {
+      const { routine, svc } = await seedTriggerWithPrecondition({
+        preconditionQuery: "SELECT true AS has_work",
+      });
+      await svc.tickScheduledTriggers(new Date());
+      const runs = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0].status).toBe("issue_created");
+      expect(runs[0].skipReason).toBeNull();
+    });
+
+    it("fires scheduled run (fail-open) when preconditionQuery throws a SQL error", async () => {
+      const { routine, svc } = await seedTriggerWithPrecondition({
+        preconditionQuery: "THIS IS NOT VALID SQL !!!",
+      });
+      await svc.tickScheduledTriggers(new Date());
+      const runs = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0].status).toBe("issue_created");
+    });
+
+    it("skips scheduled run when preconditionEndpoint returns shouldRun: false", async () => {
+      // Spin up a minimal HTTP server that returns {shouldRun: false}.
+      const server = http.createServer((req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ shouldRun: false }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as { port: number }).port;
+      try {
+        const { routine, svc } = await seedTriggerWithPrecondition({
+          preconditionEndpoint: `http://127.0.0.1:${port}/check`,
+        });
+        await svc.tickScheduledTriggers(new Date());
+        const runs = await db
+          .select()
+          .from(routineRuns)
+          .where(eq(routineRuns.routineId, routine.id));
+        expect(runs).toHaveLength(1);
+        expect(runs[0].status).toBe("skipped");
+        expect(runs[0].skipReason).toBe("precondition_not_met");
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    it("fires scheduled run (fail-open) when preconditionEndpoint is unreachable", async () => {
+      const { routine, svc } = await seedTriggerWithPrecondition({
+        preconditionEndpoint: "http://127.0.0.1:1/unreachable",
+      });
+      await svc.tickScheduledTriggers(new Date());
+      const runs = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0].status).toBe("issue_created");
     });
   });
 });
