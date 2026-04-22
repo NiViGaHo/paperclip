@@ -76,6 +76,7 @@ import {
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../services/issue-execution-policy.js";
+import { enforceStatusTransition } from "../middleware/status-transition.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -1745,7 +1746,16 @@ export function issueRoutes(
     res.status(201).json(issue);
   });
 
-  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+  router.patch(
+    "/issues/:id",
+    validate(updateIssueRouteSchema),
+    enforceStatusTransition({
+      getIssueStatus: async (id) => {
+        const issue = await svc.getById(id);
+        return issue ? { status: issue.status } : null;
+      },
+    }),
+    async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
