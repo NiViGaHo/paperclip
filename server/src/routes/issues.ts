@@ -3,7 +3,7 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { issueExecutionDecisions } from "@paperclipai/db";
+import { adminOverrideAudit, issueExecutionDecisions } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -1914,6 +1914,29 @@ export function issueRoutes(
       }
     }
 
+    // AKS-1597 REV-A: when enforceStatusTransition accepted via Exception E (CEO
+    // break-glass JWT), the admin_override_audit INSERT must land in the same
+    // transaction as the issues UPDATE so the DB UNIQUE(override_jwt_jti) acts
+    // as the replay guard. Middleware attached the verified claim context at
+    // req.statusGuard.adminOverride; handler owns the atomic persistence.
+    const adminOverrideCtx = req.statusGuard?.adminOverride;
+    const overrideRequestId = req.statusGuard?.requestId ?? null;
+    const adminOverrideAuditValues = adminOverrideCtx && overrideRequestId
+      ? {
+          overrideJwtJti: adminOverrideCtx.jti,
+          principalUserId: adminOverrideCtx.principalUserId,
+          originIp: adminOverrideCtx.originIp,
+          userAgent: adminOverrideCtx.userAgent,
+          reason: adminOverrideCtx.reason,
+          oldStatus: existing.status,
+          newStatus:
+            typeof updateFields.status === "string" ? updateFields.status : existing.status,
+          requestId: overrideRequestId,
+          jwtIat: adminOverrideCtx.jwtIat,
+          jwtExp: adminOverrideCtx.jwtExp,
+        }
+      : null;
+
     let issue;
     try {
       if (transition.decision && decisionId) {
@@ -1943,6 +1966,31 @@ export function issueRoutes(
             createdByRunId: actor.runId ?? null,
           });
 
+          if (adminOverrideAuditValues) {
+            await tx.insert(adminOverrideAudit).values({
+              ...adminOverrideAuditValues,
+              issueId: updated.id,
+            });
+          }
+
+          return updated;
+        });
+      } else if (adminOverrideAuditValues) {
+        issue = await db.transaction(async (tx) => {
+          const updated = await svc.update(
+            id,
+            {
+              ...updateFields,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            tx,
+          );
+          if (!updated) return null;
+          await tx.insert(adminOverrideAudit).values({
+            ...adminOverrideAuditValues,
+            issueId: updated.id,
+          });
           return updated;
         });
       } else {
