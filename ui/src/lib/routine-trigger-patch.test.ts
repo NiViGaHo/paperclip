@@ -20,6 +20,8 @@ function makeScheduleTrigger(overrides: Partial<RoutineTrigger> = {}): RoutineTr
     replayWindowSec: null,
     lastRotatedAt: null,
     lastResult: null,
+    preconditionQuery: null,
+    preconditionEndpoint: null,
     createdByAgentId: null,
     createdByUserId: null,
     updatedByAgentId: null,
