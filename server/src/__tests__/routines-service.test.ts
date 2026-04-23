@@ -175,7 +175,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
-  it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
+  it("coalesces into the previous routine issue when it is open but idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
@@ -202,12 +202,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       completedAt: new Date("2026-03-20T12:00:00.000Z"),
     });
 
+    // Idle open issues are now visible as activeIssue (AKS-1628 dedup fix).
     const detailBefore = await svc.getDetail(routine.id);
-    expect(detailBefore?.activeIssue).toBeNull();
+    expect(detailBefore?.activeIssue?.id).toBe(previousIssue.id);
 
+    // A new dispatch coalesces into the existing open issue rather than creating a duplicate.
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("issue_created");
-    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
 
     const routineIssues = await db
       .select({
@@ -217,9 +219,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(2);
-    expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
-    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0].id).toBe(previousIssue.id);
   });
 
   it("creates draft routines without a project or default assignee", async () => {
@@ -945,12 +946,13 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     it("skips issue creation when assignee agent no longer exists in DB (null-record guard)", async () => {
       const { agentId, routine, svc } = await seedFixture();
       // routines.assigneeAgentId has a RESTRICT FK to agents, blocking normal deletion.
-      // Wrap in a transaction so ALTER TABLE DISABLE TRIGGER and DELETE share one connection
-      // (pool connections are not sticky across separate execute/delete calls).
+      // The RI check trigger fires on the REFERENCED table (agents), not routines, so
+      // we must DISABLE TRIGGER on agents to bypass it.
+      // Wrap in a transaction so DISABLE TRIGGER and DELETE share one connection.
       await db.transaction(async (tx) => {
-        await tx.execute(sql`ALTER TABLE routines DISABLE TRIGGER ALL`);
+        await tx.execute(sql`ALTER TABLE agents DISABLE TRIGGER ALL`);
         await tx.delete(agents).where(eq(agents.id, agentId));
-        await tx.execute(sql`ALTER TABLE routines ENABLE TRIGGER ALL`);
+        await tx.execute(sql`ALTER TABLE agents ENABLE TRIGGER ALL`);
       });
       const run = await svc.runRoutine(routine.id, { source: "manual" });
       expect(run.status).toBe("assignee_not_found");

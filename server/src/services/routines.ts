@@ -692,7 +692,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         ),
       ]);
 
-      const rows = (result as { rows?: Record<string, unknown>[] }).rows;
+      const rows = Array.isArray(result) ? (result as Record<string, unknown>[]) : null;
       if (!rows || rows.length === 0) return false;
       const firstVal = Object.values(rows[0])[0];
       return !!firstVal;
