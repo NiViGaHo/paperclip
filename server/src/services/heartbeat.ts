@@ -5570,29 +5570,33 @@ export function heartbeatService(db: Db) {
           readNonEmptyString(adapterEnv.PAPERCLIP_PREFLIGHT_SCRIPT_PATH) ??
           path.resolve(process.cwd(), "scripts/heartbeat-inbox-preflight.sh");
         const apiUrl = process.env.PAPERCLIP_API_URL ?? "";
-        try {
-          const { stderr: preflightStderr } = await execFile(
-            "bash",
-            [preflightScriptPath, "--agent-id", agent.id, "--api-url", apiUrl],
-            {
-              env: { ...process.env, ...(authToken ? { PAPERCLIP_API_KEY: authToken } : {}) },
-              timeout: 15_000,
-            },
-          );
-          if (preflightStderr) {
-            await onLog("stderr", `[paperclip] preflight: ${preflightStderr}`);
+        if (!apiUrl) {
+          await onLog("stderr", "[paperclip] preflight: PAPERCLIP_API_URL not set — skipping preflight check\n");
+        } else {
+          try {
+            const { stderr: preflightStderr } = await execFile(
+              "bash",
+              [preflightScriptPath, "--api-url", apiUrl],
+              {
+                env: { ...process.env, ...(authToken ? { PAPERCLIP_API_KEY: authToken } : {}) },
+                timeout: 15_000,
+              },
+            );
+            if (preflightStderr) {
+              await onLog("stderr", `[paperclip] preflight: ${preflightStderr}`);
+            }
+          } catch (preflightErr: unknown) {
+            const errCode = (preflightErr as { code?: number | string | null }).code;
+            if (errCode === 1) {
+              await onLog("stdout", "[paperclip] Inbox preflight: no actionable work — skipping LLM invocation\n");
+              await setRunStatus(run.id, "skipped_preflight", { finishedAt: new Date() });
+              await setWakeupStatus(run.wakeupRequestId, "skipped_preflight", { finishedAt: new Date() });
+              await finalizeAgentStatus(agent.id, "succeeded");
+              return;
+            }
+            const errMsg = preflightErr instanceof Error ? preflightErr.message : String(preflightErr);
+            await onLog("stderr", `[paperclip] preflight script error — proceeding with LLM: ${errMsg}\n`);
           }
-        } catch (preflightErr: unknown) {
-          const errCode = (preflightErr as { code?: number | string | null }).code;
-          if (errCode === 1) {
-            await onLog("stdout", "[paperclip] Inbox preflight: no actionable work — skipping LLM invocation\n");
-            await setRunStatus(run.id, "skipped_preflight", { finishedAt: new Date() });
-            await setWakeupStatus(run.wakeupRequestId, "skipped_preflight", { finishedAt: new Date() });
-            await finalizeAgentStatus(agent.id, "succeeded");
-            return;
-          }
-          const errMsg = preflightErr instanceof Error ? preflightErr.message : String(preflightErr);
-          await onLog("stderr", `[paperclip] preflight script error — proceeding with LLM: ${errMsg}\n`);
         }
       }
 

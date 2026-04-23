@@ -7,15 +7,14 @@
 #
 # Required env: PAPERCLIP_API_KEY
 # Args:
-#   --agent-id  <uuid>  agent to check (required)
-#   --api-url   <url>   Paperclip API base URL, e.g. http://127.0.0.1:3100 (required)
+#   --api-url  <url>  Paperclip API base URL, e.g. http://127.0.0.1:3100 (required)
 
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/heartbeat-inbox-preflight.sh --agent-id <uuid> --api-url <url>
+  scripts/heartbeat-inbox-preflight.sh --api-url <url>
 
 Env:
   PAPERCLIP_API_KEY  short-lived run JWT (required, never passed in argv)
@@ -27,15 +26,10 @@ Exit codes:
 EOF
 }
 
-agent_id=""
 api_url=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --agent-id)
-      agent_id="${2:-}"
-      shift 2
-      ;;
     --api-url)
       api_url="${2:-}"
       shift 2
@@ -52,11 +46,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$agent_id" ]]; then
-  printf '[preflight] Missing --agent-id\n' >&2
-  exit 2
-fi
-
 if [[ -z "$api_url" ]]; then
   printf '[preflight] Missing --api-url\n' >&2
   exit 2
@@ -72,12 +61,17 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
+# Each invocation gets its own temp file to avoid races under concurrent runs.
+inbox_tmp=$(mktemp /tmp/paperclip_preflight_inbox.XXXXXX.json)
+trap 'rm -f "$inbox_tmp"' EXIT
+
 # Fetch compact inbox. Use --max-time so a hung API server does not block the run.
-http_code=$(curl -sS -o /tmp/paperclip_preflight_inbox.json -w "%{http_code}" \
+# The JWT in PAPERCLIP_API_KEY unambiguously identifies the agent — no explicit ID needed.
+http_code=$(curl -sS -o "$inbox_tmp" -w "%{http_code}" \
   --max-time 10 \
   "$api_url/api/agents/me/inbox-lite" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" 2>/dev/null) || {
-  printf '[preflight] curl failed (exit %s) — proceeding with LLM\n' "$?" >&2
+  printf '[preflight] curl failed — proceeding with LLM\n' >&2
   exit 0
 }
 
@@ -86,14 +80,11 @@ if [[ "$http_code" != "200" ]]; then
   exit 0
 fi
 
-# Count todo / in_progress / in_review items assigned to this agent.
-# inbox-lite returns a compact list; items with status in this set represent
-# actionable work. Blocked items are excluded because the agent cannot proceed
-# without external input — a bare blocked-only inbox is treated as empty.
+# Count todo / in_progress / in_review items. Blocked items are excluded:
+# the agent cannot proceed without external input, so a blocked-only inbox
+# is treated as empty.
 actionable=$(jq '[.[] | select(.status == "todo" or .status == "in_progress" or .status == "in_review")] | length' \
-  /tmp/paperclip_preflight_inbox.json 2>/dev/null) || actionable="-1"
-
-rm -f /tmp/paperclip_preflight_inbox.json
+  "$inbox_tmp" 2>/dev/null) || actionable="-1"
 
 if [[ "$actionable" == "-1" ]]; then
   printf '[preflight] Failed to parse inbox response — proceeding with LLM\n' >&2
