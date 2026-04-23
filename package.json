@@ -16,6 +16,7 @@
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
     "test": "pnpm run test:run",
+    "test:smoke": "pnpm --filter @paperclipai/server exec npx vitest run src/__tests__/routines-service.test.ts src/__tests__/routines-e2e.test.ts src/__tests__/heartbeat-comment-wake-batching.test.ts",
     "test:watch": "pnpm run preflight:workspace-links && vitest",
     "test:run": "pnpm run preflight:workspace-links && vitest run",
     "db:generate": "pnpm --filter @paperclipai/db generate",
