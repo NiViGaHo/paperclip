@@ -190,6 +190,24 @@ function shouldImplicitlyMoveCommentedIssueToTodoForAgent(input: {
   return true;
 }
 
+// AKS-1563 (parent AKS-1562, R1): log-class comment from the assignee agent on
+// a terminal (done/cancelled) issue is not a reopen signal. Returning true here
+// forces the caller to skip reopen + skip the issue_reopened_via_comment wake,
+// even when the caller explicitly passed `reopen: true`.
+function isAssigneeSelfCommentOnTerminalIssue(input: {
+  hasCommentBody: boolean;
+  issueStatus: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  actorType: "agent" | "user";
+  actorId: string;
+}) {
+  if (!input.hasCommentBody) return false;
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
+  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
+  if (input.actorType !== "agent") return false;
+  return input.actorId === input.assigneeAgentId;
+}
+
 function queueResolvedInteractionContinuationWakeup(input: {
   heartbeat: ReturnType<typeof heartbeatService>;
   issue: { id: string; assigneeAgentId: string | null; status: string };
@@ -1777,15 +1795,23 @@ export function issueRoutes(
     } = req.body;
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const assigneeSelfCommentOnTerminal = isAssigneeSelfCommentOnTerminalIssue({
+      hasCommentBody: !!commentBody,
+      issueStatus: existing.status,
+      assigneeAgentId: requestedAssigneeAgentId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
     const effectiveMoveToTodoRequested =
-      reopenRequested ||
-      (!!commentBody &&
-        shouldImplicitlyMoveCommentedIssueToTodoForAgent({
-          issueStatus: existing.status,
-          assigneeAgentId: requestedAssigneeAgentId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-        }));
+      !assigneeSelfCommentOnTerminal &&
+      (reopenRequested ||
+        (!!commentBody &&
+          shouldImplicitlyMoveCommentedIssueToTodoForAgent({
+            issueStatus: existing.status,
+            assigneeAgentId: requestedAssigneeAgentId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+          })));
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
@@ -3100,14 +3126,22 @@ export function issueRoutes(
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
+    const assigneeSelfCommentOnTerminal = isAssigneeSelfCommentOnTerminalIssue({
+      hasCommentBody: true,
+      issueStatus: issue.status,
+      assigneeAgentId: issue.assigneeAgentId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
     const effectiveMoveToTodoRequested =
-      reopenRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodoForAgent({
-        issueStatus: issue.status,
-        assigneeAgentId: issue.assigneeAgentId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-      });
+      !assigneeSelfCommentOnTerminal &&
+      (reopenRequested ||
+        shouldImplicitlyMoveCommentedIssueToTodoForAgent({
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+        }));
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
