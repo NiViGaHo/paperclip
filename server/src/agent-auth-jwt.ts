@@ -15,6 +15,7 @@ export interface LocalAgentJwtClaims {
   iss?: string;
   aud?: string;
   jti?: string;
+  scope?: string[];
 }
 
 const JWT_ALGORITHM = "HS256";
@@ -65,7 +66,7 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
+export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string, scope?: string[]) {
   const config = jwtConfig();
   if (!config) return null;
 
@@ -79,6 +80,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
     exp: now + config.ttlSeconds,
     iss: config.issuer,
     aud: config.audience,
+    ...(scope !== undefined ? { scope } : {}),
   };
 
   const header = {
@@ -127,6 +129,10 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (issuer && issuer !== config.issuer) return null;
   if (audience && audience !== config.audience) return null;
 
+  const scope = Array.isArray(claims.scope)
+    ? (claims.scope as unknown[]).filter((s): s is string => typeof s === "string")
+    : undefined;
+
   return {
     sub,
     company_id: companyId,
@@ -137,5 +143,6 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     ...(issuer ? { iss: issuer } : {}),
     ...(audience ? { aud: audience } : {}),
     jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    ...(scope !== undefined ? { scope } : {}),
   };
 }

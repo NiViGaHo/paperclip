@@ -5445,8 +5445,13 @@ export function heartbeatService(db: Db) {
       };
 
       const adapter = getServerAdapter(agent.adapterType);
+      const agentJwtScope = Array.isArray((agent.adapterConfig as Record<string, unknown> | null)?.jwtScope)
+        ? ((agent.adapterConfig as Record<string, unknown>).jwtScope as unknown[]).filter(
+            (s): s is string => typeof s === "string",
+          )
+        : undefined;
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id, agentJwtScope)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
